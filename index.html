@@ -314,23 +314,17 @@
          * 手前は平坦、正面奥(z < 0)に向かって大きな坂が伸び、左右にも起伏
          */
         function getTerrainHeight(x, z) {
-            let h = 0;
-            // 手前 (z > 5) は歩きやすい平坦地
-            if (z < 5) {
-                const dist = 5 - z;
-                // 正面奥への登り坂（なだらかに調整）
-                h += Math.pow(dist * 0.06, 1.4) * 1.8;
-                // 西側の台地(坂道が登っていく先)
-                h += (10 / (1 + Math.exp((x + 44) / 9))) * Math.min(1, dist / 25);
-                // 左右の起伏・うねり（控えめに）
-                h += Math.sin(x * 0.04) * Math.cos(z * 0.03) * 1.5;
-                // 細かな地形ノイズ
-                h += Math.sin(x * 0.1 + z * 0.1) * 0.5;
-            } else {
-                // 手前のわずかなグラデーション
-                h += Math.sin(x * 0.1) * 0.1;
-            }
-            return h;
+            // 四方に地形: 正面奥の大坂 / 西の台地 / 東のゆるい台地 / 背後の丘
+            const north = 30 * Math.exp(-((x * x) / (2 * 60 * 60) + ((z + 110) * (z + 110)) / (2 * 45 * 45)));
+            const west  = 12 / (1 + Math.exp((x + 48) / 10));
+            const east  = 9  / (1 + Math.exp(-(x - 62) / 12));
+            const south = 18 * Math.exp(-(((x - 25) * (x - 25)) / (2 * 55 * 55) + ((z - 105) * (z - 105)) / (2 * 40 * 40)));
+            const roll  = 1.2 * Math.sin(x * 0.05) * Math.cos(z * 0.045);
+            let h = north + west + east + south + roll;
+            // カメラ周辺(谷底)をなだらかに平坦化
+            const r = Math.hypot(x * 0.9, z - 18);
+            const flat = Math.min(1, Math.max(0, (r - 14) / 26));
+            return h * flat;
         }
 
         // 地形ジオメトリの生成 (180m x 220m, 80x80分割)
@@ -384,6 +378,11 @@
             // 行き止まりの路地
             { axis: 'x', at: -38, from: -34, to: -22, width: 2.5 },
             { axis: 'x', at: -72, from: 6,   to: 16,  width: 2.5 },
+            // 背後(南)側の道
+            { axis: 'x', at: 42, from: -70, to: 70,  width: 6 },
+            { axis: 'x', at: 78, from: -50, to: 60,  width: 5 },
+            { axis: 'z', at: -30, from: 30, to: 100, width: 4.5 },
+            { axis: 'z', at: 28,  from: 30, to: 95,  width: 5 },
         ];
 
         // 地形に沿った帯(道路・縁石・白線)を作る共通ビルダー
@@ -431,7 +430,7 @@
 
         // 街路灯(大通り沿い)
         for (let side of [-1, 1]) {
-            for (let lz = 10; lz > -100; lz -= 15) {
+            for (let lz = 100; lz > -100; lz -= 15) {
                 const poleGeo = new THREE.CylinderGeometry(0.1, 0.1, 4);
                 const poleMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
                 const pole = new THREE.Mesh(poleGeo, poleMat);
@@ -505,10 +504,11 @@
                        Math.abs(across) < rd.width / 2 + margin;
             });
         }
-        for (let gx = -64; gx <= 64; gx += 8) {
-            for (let gz = -100; gz <= 26; gz += 8) {
+        for (let gx = -76; gx <= 76; gx += 9) {
+            for (let gz = -100; gz <= 106; gz += 9) {
                 if (onRoad(gx, gz, 4)) continue;
-                if (Math.random() < 0.22) continue; // 空き地・駐車場・庭
+                if (Math.hypot(gx, gz - 20) < 10) continue; // カメラの立ち位置周辺は空ける
+                if (Math.random() < 0.25) continue; // 空き地・駐車場・庭
                 const bWidth = 4.5 + Math.random() * 3;
                 const bDepth = 4.5 + Math.random() * 3;
                 let bHeight = 6 + Math.random() * 5;
