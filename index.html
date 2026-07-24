@@ -356,65 +356,59 @@
         terrainMain.receiveShadow = true;
         sceneMain.add(terrainMain);
 
-        // 道路と歩道の生成
+        // --- 道路ネットワーク(大通り+脇道+路地) ---
         const roadWidth = 12;
-        const sidewalkWidth = 4;
-        
-        // 道路ライン（中央通り）
-        const roadGeo = new THREE.PlaneGeometry(roadWidth, 220, 1, 80);
-        roadGeo.rotateX(-Math.PI / 2);
-        const roadPos = roadGeo.attributes.position;
-        for(let i=0; i<roadPos.count; i++) {
-            roadPos.setY(i, getTerrainHeight(roadPos.getX(i), roadPos.getZ(i)) + 0.02);
+        const roads = [
+            { axis: 'z', at: 0,   from: -110, to: 110, width: 12, main: true }, // 大通り
+            { axis: 'z', at: -38, from: -105, to: 28,  width: 7 },  // 並行する脇道
+            { axis: 'z', at: 34,  from: -80,  to: 28,  width: 6 },  // 細い路地
+            { axis: 'x', at: -12, from: -70,  to: 70,  width: 7 },  // 交差する道
+            { axis: 'x', at: -52, from: -70,  to: 70,  width: 7 },
+            { axis: 'x', at: -88, from: -70,  to: 70,  width: 6 },
+        ];
+
+        // 地形に沿った帯(道路・縁石・白線)を作る共通ビルダー
+        function buildRoadMesh(axis, at, from, to, w, yOff, mat, scene) {
+            const len = to - from;
+            const g = axis === 'z'
+                ? new THREE.PlaneGeometry(w, len, 1, 90)
+                : new THREE.PlaneGeometry(len, w, 90, 1);
+            g.rotateX(-Math.PI / 2);
+            const pp = g.attributes.position;
+            for (let i = 0; i < pp.count; i++) {
+                let x = pp.getX(i), z = pp.getZ(i);
+                if (axis === 'z') { x += at; z += (from + to) / 2; }
+                else { x += (from + to) / 2; z += at; }
+                pp.setX(i, x); pp.setZ(i, z);
+                pp.setY(i, getTerrainHeight(x, z) + yOff);
+            }
+            g.computeVertexNormals();
+            const mesh = new THREE.Mesh(g, mat);
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            return mesh;
         }
-        roadGeo.computeVertexNormals();
+
         const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.9 });
-        const roadMesh = new THREE.Mesh(roadGeo, roadMat);
-        roadMesh.receiveShadow = true;
-        sceneMain.add(roadMesh);
-
-        // センターライン（白線）
-        const centerLineGeo = new THREE.PlaneGeometry(0.4, 220, 1, 80);
-        centerLineGeo.rotateX(-Math.PI / 2);
-        const clPos = centerLineGeo.attributes.position;
-        for(let i=0; i<clPos.count; i++) {
-            clPos.setY(i, getTerrainHeight(clPos.getX(i), clPos.getZ(i)) + 0.04);
-        }
+        const curbMat = new THREE.MeshStandardMaterial({ color: 0xdcdcd4 });
         const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
-        const lineMesh = new THREE.Mesh(centerLineGeo, lineMat);
-        sceneMain.add(lineMesh);
+        const swMat = new THREE.MeshStandardMaterial({ color: 0xa1a1aa, roughness: 0.8 });
 
-        // 縁石(道路の輪郭が読めるように)
-        for (let side of [-1, 1]) {
-            const curbGeo = new THREE.PlaneGeometry(0.35, 220, 1, 80);
-            curbGeo.rotateX(-Math.PI / 2);
-            const cp = curbGeo.attributes.position;
-            for (let i = 0; i < cp.count; i++) {
-                cp.setX(i, cp.getX(i) + side * roadWidth / 2);
-                cp.setY(i, getTerrainHeight(cp.getX(i), cp.getZ(i)) + 0.09);
+        roads.forEach(rd => {
+            buildRoadMesh(rd.axis, rd.at, rd.from, rd.to, rd.width, 0.02, roadMat, sceneMain);
+            for (const side of [-1, 1]) { // 縁石
+                buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, 0.35, 0.09, curbMat, sceneMain);
             }
-            curbGeo.computeVertexNormals();
-            const curb = new THREE.Mesh(curbGeo, new THREE.MeshStandardMaterial({ color: 0xdcdcd4 }));
-            sceneMain.add(curb);
-        }
+            if (rd.main) {
+                buildRoadMesh(rd.axis, rd.at, rd.from, rd.to, 0.4, 0.04, lineMat, sceneMain); // 白線
+                for (const side of [-1, 1]) { // 歩道
+                    buildRoadMesh(rd.axis, rd.at + side * (rd.width / 2 + 2), rd.from, rd.to, 4, 0.1, swMat, sceneMain);
+                }
+            }
+        });
 
-        // 歩道と街灯
+        // 街路灯(大通り沿い)
         for (let side of [-1, 1]) {
-            const swGeo = new THREE.PlaneGeometry(sidewalkWidth, 220, 1, 80);
-            swGeo.rotateX(-Math.PI / 2);
-            const swPos = swGeo.attributes.position;
-            const xOffset = side * (roadWidth / 2 + sidewalkWidth / 2);
-            for(let i=0; i<swPos.count; i++) {
-                swPos.setX(i, swPos.getX(i) + xOffset);
-                swPos.setY(i, getTerrainHeight(swPos.getX(i), swPos.getZ(i)) + 0.1); // 少し高く
-            }
-            swGeo.computeVertexNormals();
-            const swMat = new THREE.MeshStandardMaterial({ color: 0xa1a1aa, roughness: 0.8 });
-            const swMesh = new THREE.Mesh(swGeo, swMat);
-            swMesh.receiveShadow = true;
-            sceneMain.add(swMesh);
-            
-            // 街路灯（電灯ポール）の配置
             for (let lz = 10; lz > -100; lz -= 15) {
                 const poleGeo = new THREE.CylinderGeometry(0.1, 0.1, 4);
                 const poleMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
@@ -423,12 +417,6 @@
                 const py = getTerrainHeight(px, lz);
                 pole.position.set(px, py + 2, lz);
                 sceneMain.add(pole);
-                
-                const lightGeo = new THREE.BoxGeometry(0.6, 0.2, 0.4);
-                const lightMat = new THREE.MeshBasicMaterial({ color: 0x71717a }); // 昼間なので消灯
-                const lightMesh = new THREE.Mesh(lightGeo, lightMat);
-                lightMesh.position.set(side > 0 ? -0.2 : 0.2, 1.9, 0);
-                pole.add(lightMesh);
             }
         }
 
@@ -455,18 +443,13 @@
         const terrainAR = new THREE.Mesh(terrainGeo, terrainMatAR);
         sceneAR.add(terrainAR);
 
-        // ARビュー: 道の縁石ライン(道路の形も地形と一緒に透視できる)
-        for (let side of [-1, 1]) {
-            const eGeo = new THREE.PlaneGeometry(0.5, 220, 1, 80);
-            eGeo.rotateX(-Math.PI / 2);
-            const ep = eGeo.attributes.position;
-            for (let i = 0; i < ep.count; i++) {
-                ep.setX(i, ep.getX(i) + side * roadWidth / 2);
-                ep.setY(i, getTerrainHeight(ep.getX(i), ep.getZ(i)) + 0.15);
+        // ARビュー: 道路ネットワークの縁ライン(道の形が地形と一緒に透視できる)
+        const arEdgeMat = new THREE.MeshBasicMaterial({ color: 0xbfffd9 });
+        roads.forEach(rd => {
+            for (const side of [-1, 1]) {
+                buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, 0.5, 0.15, arEdgeMat, sceneAR);
             }
-            const eMesh = new THREE.Mesh(eGeo, new THREE.MeshBasicMaterial({ color: 0xbfffd9 }));
-            sceneAR.add(eMesh);
-        }
+        });
 
         // ARビュー用：地形の下に標高グリッド補助線を追加
         const gridHelperAR = new THREE.GridHelper(200, 40, 0x004422, 0x002211);
@@ -474,90 +457,47 @@
         sceneAR.add(gridHelperAR);
 
 
-        // 建物群の生成（道路と歩道を挟んで密集して配置）
+        // 建物群: 道路を避けて区画にグリッド配置(低層住宅の街)
         const buildingGroup = new THREE.Group();
-        
-        // 基本のビルマテリアル群
         const buildingMaterials = [
             new THREE.MeshStandardMaterial({ color: 0xf3ecdd, roughness: 0.8, map: buildingTex }),
             new THREE.MeshStandardMaterial({ color: 0xd9cfc0, roughness: 0.7, map: buildingTex }),
-            new THREE.MeshStandardMaterial({ color: 0xb9b3a6, roughness: 0.8, map: buildingTex })
+            new THREE.MeshStandardMaterial({ color: 0xb9b3a6, roughness: 0.8, map: buildingTex }),
         ];
-
-        // 建物の配置パラメータ
-        const startZ = 20;
-        const endZ = -100;
-        const stepZ = 8; // 低層住宅を密に
-        const buildAreaStart = roadWidth / 2 + sidewalkWidth + 1; // 建物エリアの開始X
-
-        // 道路の両側にビルを構築
-        for (let z = startZ; z >= endZ; z -= stepZ) {
-            for (let side of [-1, 1]) {
-                // 各側に2列〜3列のビルを並べて街の奥行きを出す
-                for (let col = 0; col < 3; col++) {
-                    const bx = side * (buildAreaStart + col * 9 + Math.random() * 2);
-                    const bz = z - Math.random() * 3;
-                    
-                    // ランダムなビル寸法 (3〜15階建て相当)
-                    const bWidth = 5 + Math.random() * 4;
-                    const bDepth = 5 + Math.random() * 4;
-                    let bHeight = 6 + Math.random() * 5;
-                    
-                    // 奥に行くほど高いビルを配置して圧迫感を出す
-                    if (bz < -30 && Math.random() > 0.75) bHeight += 6 + Math.random() * 5; // たまに小さめのマンション
-
-                    const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
-                    
-                    // テクスチャリピート設定（ビルのサイズに合わせる）
-                    const mat = buildingMaterials[Math.floor(Math.random() * buildingMaterials.length)].clone();
-                    mat.map = mat.map.clone();
-                    mat.map.repeat.set(Math.floor(bWidth/4), Math.floor(bHeight/4));
-                    
-                    const bMesh = new THREE.Mesh(bGeo, mat);
-                    bMesh.castShadow = true;
-                    bMesh.receiveShadow = true;
-
-                    // 地形の高さに合わせて配置
-                    const groundY = getTerrainHeight(bx, bz);
-                    bMesh.position.set(bx, groundY + bHeight / 2, bz);
-
-                    // 屋上設備（室外機など）
-                    if (Math.random() > 0.3) {
-                        const roofGeo = new THREE.BoxGeometry(bWidth * 0.4, 0.7, bDepth * 0.4);
-                        const roofMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
-                        const roofMesh = new THREE.Mesh(roofGeo, roofMat);
-                        roofMesh.position.set(0, bHeight / 2 + 1, 0);
-                        bMesh.add(roofMesh);
-                    }
-
-                    buildingGroup.add(bMesh);
-                }
+        // テクスチャのクローンは重いので、共有マテリアルを数種類だけ事前に作る
+        const sharedMats = [];
+        for (let i = 0; i < 9; i++) {
+            const m = buildingMaterials[i % 3].clone();
+            m.map = buildingTex.clone();
+            m.map.repeat.set(1 + (i % 3), 1 + Math.floor(i / 3) % 3);
+            m.map.needsUpdate = true;
+            sharedMats.push(m);
+        }
+        function onRoad(x, z, margin) {
+            return roads.some(rd => {
+                const along = rd.axis === 'z' ? z : x;
+                const across = rd.axis === 'z' ? x - rd.at : z - rd.at;
+                return along > rd.from - margin && along < rd.to + margin &&
+                       Math.abs(across) < rd.width / 2 + margin;
+            });
+        }
+        for (let gx = -64; gx <= 64; gx += 8) {
+            for (let gz = -100; gz <= 26; gz += 8) {
+                if (onRoad(gx, gz, 4)) continue;
+                if (Math.random() < 0.22) continue; // 空き地・駐車場・庭
+                const bWidth = 4.5 + Math.random() * 3;
+                const bDepth = 4.5 + Math.random() * 3;
+                let bHeight = 6 + Math.random() * 5;
+                if (Math.random() > 0.88) bHeight += 6 + Math.random() * 6; // たまに小さめのマンション
+                const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
+                const bMesh = new THREE.Mesh(bGeo, sharedMats[Math.floor(Math.random() * sharedMats.length)]);
+                const bx = gx + (Math.random() - 0.5) * 2;
+                const bz = gz + (Math.random() - 0.5) * 2;
+                const groundY = getTerrainHeight(bx, bz);
+                bMesh.position.set(bx, groundY + bHeight / 2, bz);
+                buildingGroup.add(bMesh);
             }
         }
-
-        // 突き当たり（正面奥 z = -70〜-100）に道路を完全に塞ぐ巨大なビル群
-        // これにより「地上から直接奥の大きな坂が見えない」状態を作り出す
-        for (let bx = -40; bx <= 40; bx += 12) {
-            const bWidth = 12;
-            const bDepth = 14;
-            const bHeight = 9 + Math.random() * 5; // 低層の家並み(遠景はフォグで霞む)
-            const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
-            
-            const mat = buildingMaterials[0].clone();
-            mat.map = mat.map.clone();
-            mat.map.repeat.set(Math.floor(bWidth/4), Math.floor(bHeight/4));
-
-            const bMesh = new THREE.Mesh(bGeo, mat);
-            bMesh.castShadow = true;
-            bMesh.receiveShadow = true;
-
-            const bz = -80 - Math.random() * 15;
-            const groundY = getTerrainHeight(bx, bz);
-            bMesh.position.set(bx, groundY + bHeight / 2, bz);
-
-            buildingGroup.add(bMesh);
-        }
-
         sceneMain.add(buildingGroup);
 
         // メインシーンのライティング（昼間の太陽光と環境光）
