@@ -320,6 +320,8 @@
                 const dist = 5 - z;
                 // 正面奥への登り坂（なだらかに調整）
                 h += Math.pow(dist * 0.06, 1.4) * 1.8;
+                // 西側の台地(坂道が登っていく先)
+                h += 10 / (1 + Math.exp((x + 44) / 9));
                 // 左右の起伏・うねり（控えめに）
                 h += Math.sin(x * 0.04) * Math.cos(z * 0.03) * 1.5;
                 // 細かな地形ノイズ
@@ -359,16 +361,34 @@
         // --- 道路ネットワーク(大通り+脇道+路地) ---
         const roadWidth = 12;
         const roads = [
-            { axis: 'z', at: 0,   from: -110, to: 110, width: 12, main: true }, // 大通り
-            { axis: 'z', at: -38, from: -105, to: 28,  width: 7 },  // 並行する脇道
-            { axis: 'z', at: 34,  from: -80,  to: 28,  width: 6 },  // 細い路地
-            { axis: 'x', at: -12, from: -70,  to: 70,  width: 7 },  // 交差する道
-            { axis: 'x', at: -52, from: -70,  to: 70,  width: 7 },
-            { axis: 'x', at: -88, from: -70,  to: 70,  width: 6 },
+            // 谷底を走る大通り(不忍通りのイメージ)
+            { axis: 'z', at: 0,   from: -110, to: 110, width: 12, main: true },
+            // 西の台地へ登る坂道たち(団子坂・三崎坂のイメージ: 幅も間隔も不揃い)
+            { axis: 'x', at: -10, from: -64, to: -6, width: 6.5 },
+            { axis: 'x', at: -46, from: -70, to: -6, width: 5 },
+            { axis: 'x', at: -84, from: -58, to: -6, width: 7 },
+            // 東側の道(西側とzをずらした「食い違い交差」)
+            { axis: 'x', at: -24, from: 6, to: 58, width: 5.5 },
+            { axis: 'x', at: -64, from: 6, to: 66, width: 4.5 },
+            // 台地側の裏道
+            { axis: 'z', at: -34, from: -100, to: 4, width: 5 },
+            { axis: 'z', at: -58, from: -88, to: -40, width: 4 },
+            // へび道(暗渠っぽくジグザグに曲がる幅3mの路地)
+            { axis: 'z', at: 16, from: 6,   to: -8,  width: 3 },
+            { axis: 'x', at: -8, from: 16,  to: 24,  width: 3 },
+            { axis: 'z', at: 24, from: -8,  to: -30, width: 3 },
+            { axis: 'x', at: -30, from: 24, to: 34,  width: 3 },
+            { axis: 'z', at: 34, from: -30, to: -52, width: 3 },
+            { axis: 'x', at: -52, from: 34, to: 44,  width: 3 },
+            { axis: 'z', at: 44, from: -52, to: -72, width: 3 },
+            // 行き止まりの路地
+            { axis: 'x', at: -38, from: -34, to: -22, width: 2.5 },
+            { axis: 'x', at: -72, from: 6,   to: 16,  width: 2.5 },
         ];
 
         // 地形に沿った帯(道路・縁石・白線)を作る共通ビルダー
         function buildRoadMesh(axis, at, from, to, w, yOff, mat, scene) {
+            if (from > to) { const t = from; from = to; to = t; }
             const len = to - from;
             const g = axis === 'z'
                 ? new THREE.PlaneGeometry(w, len, 1, 90)
@@ -396,8 +416,10 @@
 
         roads.forEach(rd => {
             buildRoadMesh(rd.axis, rd.at, rd.from, rd.to, rd.width, 0.02, roadMat, sceneMain);
-            for (const side of [-1, 1]) { // 縁石
-                buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, 0.35, 0.09, curbMat, sceneMain);
+            if (rd.width >= 4) { // 縁石(路地にはなし)
+                for (const side of [-1, 1]) {
+                    buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, 0.35, 0.09, curbMat, sceneMain);
+                }
             }
             if (rd.main) {
                 buildRoadMesh(rd.axis, rd.at, rd.from, rd.to, 0.4, 0.04, lineMat, sceneMain); // 白線
@@ -446,8 +468,9 @@
         // ARビュー: 道路ネットワークの縁ライン(道の形が地形と一緒に透視できる)
         const arEdgeMat = new THREE.MeshBasicMaterial({ color: 0xbfffd9 });
         roads.forEach(rd => {
+            const ew = rd.width >= 4 ? 0.5 : 0.3;
             for (const side of [-1, 1]) {
-                buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, 0.5, 0.15, arEdgeMat, sceneAR);
+                buildRoadMesh(rd.axis, rd.at + side * rd.width / 2, rd.from, rd.to, ew, 0.15, arEdgeMat, sceneAR);
             }
         });
 
@@ -477,7 +500,8 @@
             return roads.some(rd => {
                 const along = rd.axis === 'z' ? z : x;
                 const across = rd.axis === 'z' ? x - rd.at : z - rd.at;
-                return along > rd.from - margin && along < rd.to + margin &&
+                const lo = Math.min(rd.from, rd.to), hi = Math.max(rd.from, rd.to);
+                return along > lo - margin && along < hi + margin &&
                        Math.abs(across) < rd.width / 2 + margin;
             });
         }
