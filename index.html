@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>坂、見えてますよ - AR Terrain Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Noto+Sans+JP:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans JP', 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0b0f19;
+            color: #ffffff;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #webgl-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            cursor: grab;
+        }
+
+        #webgl-canvas:active {
+            cursor: grabbing;
+        }
+
+        /* スマホベゼル・フレームのスタイリング */
+        .phone-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: min(340px, 85vw);
+            height: min(680px, 78vh);
+            z-index: 10;
+            pointer-events: none; /* 下層のCanvas操作を通過させる */
+            box-sizing: border-box;
+            border-radius: 48px;
+            
+            /* 背景を透明にし、borderでベゼルを表現（背後のScissor描画を透過させる） */
+            background-color: transparent;
+            border: 16px solid #1a1c20;
+            
+            box-shadow: 0 25px 60px rgba(0,0,0,0.6),
+                        0 0 0 2px rgba(255,255,255,0.1),
+                        inset 0 0 0 2px rgba(0,0,0,0.8),
+                        inset 0 0 0 6px #1a1c20; /* Scissorの四角い角のはみ出しを隠すためのインナーマスク */
+        }
+
+        /* スマホ画面部分（透明。この背後にWebGLの第2パスが描画される） */
+        .phone-screen {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            border-radius: 30px; /* ベゼル内側の丸み */
+            overflow: hidden;
+            box-shadow: inset 0 0 20px rgba(0, 255, 102, 0.15);
+        }
+
+        /* Dynamic Island / Notch */
+        .phone-notch {
+            position: absolute;
+            top: -2px; /* borderに密着させる */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90px;
+            height: 24px;
+            background-color: #1a1c20;
+            border-radius: 0 0 20px 20px;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 10px;
+            box-shadow: inset 0 -2px 5px rgba(0,0,0,0.5);
+        }
+
+        .phone-notch::after {
+            content: '';
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #0d1b2a;
+            border: 1px solid #1e3a8a;
+        }
+
+        /* AR HUD オーバーレイ要素 */
+        .ar-hud-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(0,255,102,0.8), transparent);
+            animation: scanline 3s infinite linear;
+            pointer-events: none;
+        }
+
+        @keyframes scanline {
+            0% { top: 0%; opacity: 0; }
+            15% { opacity: 1; }
+            85% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        .ar-grid-overlay {
+            position: absolute;
+            inset: 0;
+            background-image: 
+                radial-gradient(circle at 50% 50%, transparent 60%, rgba(0,255,102,0.1) 100%),
+                linear-gradient(rgba(0, 255, 102, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 102, 0.05) 1px, transparent 1px);
+            background-size: 100% 100%, 20px 20px, 20px 20px;
+            pointer-events: none;
+        }
+
+        /* Glassmorphism Panels */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body class="w-full h-screen overflow-hidden">
+
+    <!-- 全画面 3D Canvas -->
+    <canvas id="webgl-canvas"></canvas>
+
+    <!-- ヘッダー / アプリタイトル -->
+    <div class="absolute top-4 left-4 z-20 pointer-events-none">
+        <div class="glass-panel px-4 py-3 rounded-2xl max-w-xs shadow-2xl border-emerald-500/30">
+            <div class="flex items-center gap-2 mb-1">
+                <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <h1 class="text-lg font-black tracking-wider text-white">坂、見えてますよ</h1>
+                <span class="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-500/40 px-1.5 py-0.5 rounded font-mono">AR VISTA</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+                ビル群に隠された都市の本来の地形（勾配）を透視。
+            </p>
+            <div class="mt-2 text-[11px] text-emerald-400/90 font-mono flex items-center gap-1">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"></path></svg>
+                <span>ドラッグ / スワイプで360°見回す</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 右上：AR状態ステータス -->
+    <div class="absolute top-4 right-4 z-20 pointer-events-none hidden sm:block">
+        <div class="glass-panel px-4 py-2.5 rounded-xl font-mono text-xs text-right space-y-1">
+            <div class="text-slate-400">SENSOR: <span class="text-emerald-400">ONLINE</span></div>
+            <div class="text-slate-400">MODE: <span class="text-emerald-400">X-RAY TERRAIN</span></div>
+            <div class="text-slate-400">SLOPE DETECTED: <span class="text-emerald-400 font-bold" id="slope-value">+12.4%</span></div>
+        </div>
+    </div>
+
+    <!-- 中央：スマートフォン型 ARレンズベゼル -->
+    <div class="phone-container">
+        <div class="phone-notch"></div>
+        
+        <div id="phone-screen" class="phone-screen">
+            <!-- AR スキャンラインアニメーション -->
+            <div class="ar-hud-line"></div>
+            <div class="ar-grid-overlay"></div>
+
+            <!-- AR HUD 表示 -->
+            <div class="absolute top-8 left-0 right-0 px-4 flex justify-between items-center text-[10px] font-mono text-emerald-400/90 z-20">
+                <span class="bg-black/60 px-2 py-0.5 rounded border border-emerald-500/30">GPS: 35.6812, 139.7671</span>
+                <span class="bg-black/60 px-2 py-0.5 rounded border border-emerald-500/30" id="hud-yaw">YAW: 000°</span>
+            </div>
+
+            <!-- センターターゲット照準 -->
+            <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-20 opacity-60">
+                <div class="w-12 h-12 border border-emerald-400/50 rounded-full flex items-center justify-center">
+                    <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></div>
+                </div>
+                <div class="absolute w-16 h-px bg-emerald-400/30"></div>
+                <div class="absolute h-16 w-px bg-emerald-400/30"></div>
+            </div>
+
+            <!-- AR フッター情報 -->
+            <div class="absolute bottom-6 left-0 right-0 px-4 text-center z-20">
+                <div class="inline-block bg-black/80 backdrop-blur border border-emerald-500/50 px-3 py-1.5 rounded-full text-[11px] font-mono text-emerald-300 shadow-lg">
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 mr-1.5 animate-ping"></span>
+                    <span id="hud-status">隠れた坂を検出中...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 下部操作パネル -->
+    <div class="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3">
+        <button id="btn-wire-color" class="glass-panel hover:bg-slate-800/80 text-white text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 pointer-events-auto active:scale-95">
+            <span class="w-3 h-3 rounded-full bg-emerald-400 inline-block shadow-[0_0_8px_#00ff66]" id="color-dot"></span>
+            <span>表示カラー切り替え</span>
+        </button>
+        <button id="btn-reset-view" class="glass-panel hover:bg-slate-800/80 text-white text-xs px-4 py-2.5 rounded-xl transition flex items-center gap-2 pointer-events-auto active:scale-95">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            <span>正面に戻す</span>
+        </button>
+    </div>
+
+    <script>
+        // --- 基本変数・設定 ---
+        const canvas = document.getElementById('webgl-canvas');
+        const phoneScreen = document.getElementById('phone-screen');
+        const hudYaw = document.getElementById('hud-yaw');
+        const slopeValue = document.getElementById('slope-value');
+        const hudStatus = document.getElementById('hud-status');
+
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+
+        // レンダラー設定
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+        renderer.setSize(width, height);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        // --- 2つのシーン構成 ---
+        // Scene 1: メインビュー（全画面：現実の街並み。建物で奥の坂が隠れている）
+        const sceneMain = new THREE.Scene();
+        // 都会の昼空色
+        const skyColor = 0x87ceeb;
+        sceneMain.background = new THREE.Color(skyColor);
+        sceneMain.fog = new THREE.FogExp2(skyColor, 0.014);
+
+        // Scene 2: ARビュー（スマホ内：背景黒、建物なし、緑のワイヤーフレーム地形のみ）
+        const sceneAR = new THREE.Scene();
+        sceneAR.background = new THREE.Color(0x020608);
+
+        // 共有カメラ
+        const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 400);
+        // カメラ位置：地上1.6m（道路中央手前）
+        const cameraBaseY = 1.6;
+        camera.position.set(0, cameraBaseY, 20);
+
+        // ビルの窓用テクスチャをCanvasで動的生成（街のディテールアップ）
+        function createBuildingTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            // ベース壁色（昼の明るいビル）
+            ctx.fillStyle = '#efe9dc';
+            ctx.fillRect(0, 0, 512, 512);
+            
+            // 窓を描画
+            const rows = 4;
+            const cols = 5;
+            const winW = 44;
+            const winH = 52;
+            const padX = (512 - (cols * winW)) / (cols + 1);
+            const padY = (512 - (rows * winH)) / (rows + 1);
+
+            for(let r = 0; r < rows; r++) {
+                for(let c = 0; c < cols; c++) {
+                    const x = padX + c * (winW + padX);
+                    const y = padY + r * (winH + padY);
+                    
+                    // 昼間の窓（空を反射する色や暗い色）
+                    const rand = Math.random();
+                    if(rand > 0.8) {
+                        ctx.fillStyle = '#64748b'; // ブラインドが下りているような色
+                    } else if (rand > 0.4) {
+                        ctx.fillStyle = '#475569'; // 少し暗めの反射
+                    } else {
+                        ctx.fillStyle = '#1e293b'; // 暗い窓
+                    }
+                    ctx.shadowBlur = 0;
+                    ctx.fillRect(x, y, winW, winH);
+                }
+            }
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            // フィルタリング設定で少しシャープにする
+            texture.magFilter = THREE.NearestFilter;
+            return texture;
+        }
+        
+        const buildingTex = createBuildingTexture();
+
+        /**
+         * 地形の標高を計算する関数 (Heightmap)
+         * 手前は平坦、正面奥(z < 0)に向かって大きな坂が伸び、左右にも起伏
+         */
+        function getTerrainHeight(x, z) {
+            let h = 0;
+            // 手前 (z > 5) は歩きやすい平坦地
+            if (z < 5) {
+                const dist = 5 - z;
+                // 正面奥への登り坂（なだらかに調整）
+                h += Math.pow(dist * 0.06, 1.4) * 1.8;
+                // 左右の起伏・うねり（控えめに）
+                h += Math.sin(x * 0.04) * Math.cos(z * 0.03) * 1.5;
+                // 細かな地形ノイズ
+                h += Math.sin(x * 0.1 + z * 0.1) * 0.5;
+            } else {
+                // 手前のわずかなグラデーション
+                h += Math.sin(x * 0.1) * 0.1;
+            }
+            return h;
+        }
+
+        // 地形ジオメトリの生成 (180m x 220m, 80x80分割)
+        const terrainGeo = new THREE.PlaneGeometry(180, 220, 80, 80);
+        terrainGeo.rotateX(-Math.PI / 2); // XZ平面へ倒す
+
+        // 頂点座標のY値を計算して変形
+        const posAttr = terrainGeo.attributes.position;
+        for (let i = 0; i < posAttr.count; i++) {
+            const x = posAttr.getX(i);
+            const z = posAttr.getZ(i);
+            const y = getTerrainHeight(x, z);
+            posAttr.setY(i, y);
+        }
+        terrainGeo.computeVertexNormals();
+
+        // 1) メインビュー用地形メッシュ（土・コンクリートベース）
+        const terrainMatMain = new THREE.MeshStandardMaterial({
+            color: 0x889988,
+            roughness: 0.9,
+            metalness: 0.0,
+            flatShading: true
+        });
+        const terrainMain = new THREE.Mesh(terrainGeo, terrainMatMain);
+        terrainMain.receiveShadow = true;
+        sceneMain.add(terrainMain);
+
+        // 道路と歩道の生成
+        const roadWidth = 12;
+        const sidewalkWidth = 4;
+        
+        // 道路ライン（中央通り）
+        const roadGeo = new THREE.PlaneGeometry(roadWidth, 220, 1, 80);
+        roadGeo.rotateX(-Math.PI / 2);
+        const roadPos = roadGeo.attributes.position;
+        for(let i=0; i<roadPos.count; i++) {
+            roadPos.setY(i, getTerrainHeight(roadPos.getX(i), roadPos.getZ(i)) + 0.02);
+        }
+        roadGeo.computeVertexNormals();
+        const roadMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.9 });
+        const roadMesh = new THREE.Mesh(roadGeo, roadMat);
+        roadMesh.receiveShadow = true;
+        sceneMain.add(roadMesh);
+
+        // センターライン（白線）
+        const centerLineGeo = new THREE.PlaneGeometry(0.4, 220, 1, 80);
+        centerLineGeo.rotateX(-Math.PI / 2);
+        const clPos = centerLineGeo.attributes.position;
+        for(let i=0; i<clPos.count; i++) {
+            clPos.setY(i, getTerrainHeight(clPos.getX(i), clPos.getZ(i)) + 0.04);
+        }
+        const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 });
+        const lineMesh = new THREE.Mesh(centerLineGeo, lineMat);
+        sceneMain.add(lineMesh);
+
+        // 縁石(道路の輪郭が読めるように)
+        for (let side of [-1, 1]) {
+            const curbGeo = new THREE.PlaneGeometry(0.35, 220, 1, 80);
+            curbGeo.rotateX(-Math.PI / 2);
+            const cp = curbGeo.attributes.position;
+            for (let i = 0; i < cp.count; i++) {
+                cp.setX(i, cp.getX(i) + side * roadWidth / 2);
+                cp.setY(i, getTerrainHeight(cp.getX(i), cp.getZ(i)) + 0.09);
+            }
+            curbGeo.computeVertexNormals();
+            const curb = new THREE.Mesh(curbGeo, new THREE.MeshStandardMaterial({ color: 0xdcdcd4 }));
+            sceneMain.add(curb);
+        }
+
+        // 歩道と街灯
+        for (let side of [-1, 1]) {
+            const swGeo = new THREE.PlaneGeometry(sidewalkWidth, 220, 1, 80);
+            swGeo.rotateX(-Math.PI / 2);
+            const swPos = swGeo.attributes.position;
+            const xOffset = side * (roadWidth / 2 + sidewalkWidth / 2);
+            for(let i=0; i<swPos.count; i++) {
+                swPos.setX(i, swPos.getX(i) + xOffset);
+                swPos.setY(i, getTerrainHeight(swPos.getX(i), swPos.getZ(i)) + 0.1); // 少し高く
+            }
+            swGeo.computeVertexNormals();
+            const swMat = new THREE.MeshStandardMaterial({ color: 0xa1a1aa, roughness: 0.8 });
+            const swMesh = new THREE.Mesh(swGeo, swMat);
+            swMesh.receiveShadow = true;
+            sceneMain.add(swMesh);
+            
+            // 街路灯（電灯ポール）の配置
+            for (let lz = 10; lz > -100; lz -= 15) {
+                const poleGeo = new THREE.CylinderGeometry(0.1, 0.1, 4);
+                const poleMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
+                const pole = new THREE.Mesh(poleGeo, poleMat);
+                const px = side * (roadWidth / 2 + 0.5);
+                const py = getTerrainHeight(px, lz);
+                pole.position.set(px, py + 2, lz);
+                sceneMain.add(pole);
+                
+                const lightGeo = new THREE.BoxGeometry(0.6, 0.2, 0.4);
+                const lightMat = new THREE.MeshBasicMaterial({ color: 0x71717a }); // 昼間なので消灯
+                const lightMesh = new THREE.Mesh(lightGeo, lightMat);
+                lightMesh.position.set(side > 0 ? -0.2 : 0.2, 1.9, 0);
+                pole.add(lightMesh);
+            }
+        }
+
+        // 2) ARビュー用地形メッシュ（緑のワイヤーフレーム＋半透明ベース）
+        let wireframeColor = 0x00ff66;
+        
+        // ベースの暗い半透明面（立体感を出すため）
+        const terrainBaseMatAR = new THREE.MeshBasicMaterial({
+            color: 0x002211,
+            transparent: true,
+            opacity: 0.6,
+            depthWrite: false
+        });
+        const terrainBaseAR = new THREE.Mesh(terrainGeo, terrainBaseMatAR);
+        sceneAR.add(terrainBaseAR);
+
+        // ワイヤーフレーム面
+        const terrainMatAR = new THREE.MeshBasicMaterial({
+            color: wireframeColor,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.85
+        });
+        const terrainAR = new THREE.Mesh(terrainGeo, terrainMatAR);
+        sceneAR.add(terrainAR);
+
+        // ARビュー: 道の縁石ライン(道路の形も地形と一緒に透視できる)
+        for (let side of [-1, 1]) {
+            const eGeo = new THREE.PlaneGeometry(0.5, 220, 1, 80);
+            eGeo.rotateX(-Math.PI / 2);
+            const ep = eGeo.attributes.position;
+            for (let i = 0; i < ep.count; i++) {
+                ep.setX(i, ep.getX(i) + side * roadWidth / 2);
+                ep.setY(i, getTerrainHeight(ep.getX(i), ep.getZ(i)) + 0.15);
+            }
+            const eMesh = new THREE.Mesh(eGeo, new THREE.MeshBasicMaterial({ color: 0xbfffd9 }));
+            sceneAR.add(eMesh);
+        }
+
+        // ARビュー用：地形の下に標高グリッド補助線を追加
+        const gridHelperAR = new THREE.GridHelper(200, 40, 0x004422, 0x002211);
+        gridHelperAR.position.y = -2;
+        sceneAR.add(gridHelperAR);
+
+
+        // 建物群の生成（道路と歩道を挟んで密集して配置）
+        const buildingGroup = new THREE.Group();
+        
+        // 基本のビルマテリアル群
+        const buildingMaterials = [
+            new THREE.MeshStandardMaterial({ color: 0xf3ecdd, roughness: 0.8, map: buildingTex }),
+            new THREE.MeshStandardMaterial({ color: 0xd9cfc0, roughness: 0.7, map: buildingTex }),
+            new THREE.MeshStandardMaterial({ color: 0xb9b3a6, roughness: 0.8, map: buildingTex })
+        ];
+
+        // 建物の配置パラメータ
+        const startZ = 20;
+        const endZ = -100;
+        const stepZ = 8; // 低層住宅を密に
+        const buildAreaStart = roadWidth / 2 + sidewalkWidth + 1; // 建物エリアの開始X
+
+        // 道路の両側にビルを構築
+        for (let z = startZ; z >= endZ; z -= stepZ) {
+            for (let side of [-1, 1]) {
+                // 各側に2列〜3列のビルを並べて街の奥行きを出す
+                for (let col = 0; col < 3; col++) {
+                    const bx = side * (buildAreaStart + col * 9 + Math.random() * 2);
+                    const bz = z - Math.random() * 3;
+                    
+                    // ランダムなビル寸法 (3〜15階建て相当)
+                    const bWidth = 5 + Math.random() * 4;
+                    const bDepth = 5 + Math.random() * 4;
+                    let bHeight = 6 + Math.random() * 5;
+                    
+                    // 奥に行くほど高いビルを配置して圧迫感を出す
+                    if (bz < -30 && Math.random() > 0.75) bHeight += 6 + Math.random() * 5; // たまに小さめのマンション
+
+                    const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
+                    
+                    // テクスチャリピート設定（ビルのサイズに合わせる）
+                    const mat = buildingMaterials[Math.floor(Math.random() * buildingMaterials.length)].clone();
+                    mat.map = mat.map.clone();
+                    mat.map.repeat.set(Math.floor(bWidth/4), Math.floor(bHeight/4));
+                    
+                    const bMesh = new THREE.Mesh(bGeo, mat);
+                    bMesh.castShadow = true;
+                    bMesh.receiveShadow = true;
+
+                    // 地形の高さに合わせて配置
+                    const groundY = getTerrainHeight(bx, bz);
+                    bMesh.position.set(bx, groundY + bHeight / 2, bz);
+
+                    // 屋上設備（室外機など）
+                    if (Math.random() > 0.3) {
+                        const roofGeo = new THREE.BoxGeometry(bWidth * 0.4, 0.7, bDepth * 0.4);
+                        const roofMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+                        const roofMesh = new THREE.Mesh(roofGeo, roofMat);
+                        roofMesh.position.set(0, bHeight / 2 + 1, 0);
+                        bMesh.add(roofMesh);
+                    }
+
+                    buildingGroup.add(bMesh);
+                }
+            }
+        }
+
+        // 突き当たり（正面奥 z = -70〜-100）に道路を完全に塞ぐ巨大なビル群
+        // これにより「地上から直接奥の大きな坂が見えない」状態を作り出す
+        for (let bx = -40; bx <= 40; bx += 12) {
+            const bWidth = 12;
+            const bDepth = 14;
+            const bHeight = 9 + Math.random() * 5; // 低層の家並み(遠景はフォグで霞む)
+            const bGeo = new THREE.BoxGeometry(bWidth, bHeight, bDepth);
+            
+            const mat = buildingMaterials[0].clone();
+            mat.map = mat.map.clone();
+            mat.map.repeat.set(Math.floor(bWidth/4), Math.floor(bHeight/4));
+
+            const bMesh = new THREE.Mesh(bGeo, mat);
+            bMesh.castShadow = true;
+            bMesh.receiveShadow = true;
+
+            const bz = -80 - Math.random() * 15;
+            const groundY = getTerrainHeight(bx, bz);
+            bMesh.position.set(bx, groundY + bHeight / 2, bz);
+
+            buildingGroup.add(bMesh);
+        }
+
+        sceneMain.add(buildingGroup);
+
+        // メインシーンのライティング（昼間の太陽光と環境光）
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // 全体を明るく照らす
+        sceneMain.add(ambientLight);
+
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        hemiLight.position.set(0, 50, 0);
+        sceneMain.add(hemiLight);
+
+        // 太陽光のような指向性ライト
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(50, 100, 30);
+        dirLight.castShadow = true;
+        // シャドウマップの解像度と範囲を広げる
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 10;
+        dirLight.shadow.camera.far = 200;
+        const d = 80;
+        dirLight.shadow.camera.left = -d;
+        dirLight.shadow.camera.right = d;
+        dirLight.shadow.camera.top = d;
+        dirLight.shadow.camera.bottom = -d;
+        // シャドウのぼかし
+        dirLight.shadow.bias = -0.0005;
+        sceneMain.add(dirLight);
+
+        // カメラ初期位置のY座標を地形に合わせる
+        camera.position.y = getTerrainHeight(0, 20) + cameraBaseY;
+
+        // --- STREAMING_CHUNK:Camera Orbit Controls (Yaw/Pitch Drag)... ---
+        // ドラッグ視点操作 (Yaw / Pitch)
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let yaw = 0;   // 左右回転 (ラジアン)
+        let pitch = 0; // 上下回転 (ラジアン)
+
+        const maxPitch = THREE.MathUtils.degToRad(30); // ±30度に制限
+
+        function onPointerDown(e) {
+            isDragging = true;
+            previousMousePosition = {
+                x: e.clientX || (e.touches && e.touches[0].clientX) || 0,
+                y: e.clientY || (e.touches && e.touches[0].clientY) || 0
+            };
+        }
+
+        function onPointerMove(e) {
+            if (!isDragging) return;
+
+            const clientX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+            const clientY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+
+            const deltaX = clientX - previousMousePosition.x;
+            const deltaY = clientY - previousMousePosition.y;
+
+            yaw -= deltaX * 0.0035;
+            pitch -= deltaY * 0.0035;
+
+            // Pitch制限
+            pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+
+            previousMousePosition = { x: clientX, y: clientY };
+        }
+
+        function onPointerUp() {
+            isDragging = false;
+        }
+
+        // イベントリスナーの登録
+        window.addEventListener('mousedown', onPointerDown);
+        window.addEventListener('mousemove', onPointerMove);
+        window.addEventListener('mouseup', onPointerUp);
+
+        window.addEventListener('touchstart', onPointerDown, { passive: true });
+        window.addEventListener('touchmove', onPointerMove, { passive: true });
+        window.addEventListener('touchend', onPointerUp);
+
+
+        // --- STREAMING_CHUNK:UI Interaction Logic... ---
+        // 正面に戻すボタン
+        document.getElementById('btn-reset-view').addEventListener('click', () => {
+            yaw = 0;
+            pitch = 0;
+        });
+
+        // ワイヤーフレーム色変更ボタン
+        const colors = [
+            { hex: 0x00ff66, css: '#00ff66' }, // ネオングリーン
+            { hex: 0x00e5ff, css: '#00e5ff' }, // サイバーシアン
+            { hex: 0xff3366, css: '#ff3366' }, // ネオンピンク
+            { hex: 0xffc107, css: '#ffc107' }  // アンバー
+        ];
+        let colorIdx = 0;
+
+        document.getElementById('btn-wire-color').addEventListener('click', () => {
+            colorIdx = (colorIdx + 1) % colors.length;
+            const c = colors[colorIdx];
+            terrainMatAR.color.setHex(c.hex);
+            document.getElementById('color-dot').style.backgroundColor = c.css;
+            document.getElementById('color-dot').style.boxShadow = `0 0 8px ${c.css}`;
+        });
+
+
+        // --- STREAMING_CHUNK:Window Resize Handler... ---
+        function onWindowResize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(width, height);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        }
+        window.addEventListener('resize', onWindowResize);
+
+
+        // --- STREAMING_CHUNK:Dual-Pass Scissor Rendering Loop... ---
+        /**
+         * メインのアニメーションループ
+         * 1パス目：全画面に `sceneMain` (通常街並み) を描画
+         * 2パス目：スマホ画面枠だけにScissorで `sceneAR` (ワイヤーフレーム地形) を描画
+         */
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1) カメラの回転更新
+            camera.rotation.set(pitch, yaw, 0, 'YXZ');
+
+            // HUD表示更新 (yaw角度)
+            const degYaw = Math.round((THREE.MathUtils.radToDeg(-yaw) % 360 + 360) % 360);
+            hudYaw.textContent = `YAW: ${String(degYaw).padStart(3, '0')}°`;
+
+            // 正面方向を向いているかどうかに応じてステータステキスト変更
+            if (Math.abs(degYaw) < 30 || Math.abs(degYaw - 360) < 30) {
+                slopeValue.textContent = "+14.8%";
+                hudStatus.textContent = "正面に大きな坂道 (+14.8%) を検出";
+            } else if (Math.abs(degYaw - 180) < 40) {
+                slopeValue.textContent = "±0.2%";
+                hudStatus.textContent = "手前エリア：平坦地";
+            } else {
+                slopeValue.textContent = "+5.1%";
+                hudStatus.textContent = "緩やかな横勾配を検出";
+            }
+
+            // === 1st Pass: メインビュー (全画面描画) ===
+            renderer.setScissorTest(false);
+            renderer.setViewport(0, 0, width, height);
+            renderer.render(sceneMain, camera);
+
+            // === 2nd Pass: スマホ画面枠 (Scissor テストによるクリッピング描画) ===
+            const rect = phoneScreen.getBoundingClientRect();
+
+            if (rect.width > 0 && rect.height > 0) {
+                // WebGLのScissor領域は左下原点(Bottom-Left)基準
+                // ※Three.jsのsetScissor/setViewportは内部で自動的にpixelRatioを乗算するため、
+                // dprを掛けずにCSS論理ピクセルのまま渡す必要があります。
+                const left = rect.left;
+                const bottom = height - rect.bottom;
+                const phoneW = rect.width;
+                const phoneH = rect.height;
+
+                renderer.setScissorTest(true);
+                renderer.setScissor(left, bottom, phoneW, phoneH);
+                renderer.setViewport(left, bottom, phoneW, phoneH);
+
+                // ARシーンのレンダリング
+                renderer.render(sceneAR, camera);
+            }
+        }
+
+        // 初期化実行
+        window.onload = () => {
+            onWindowResize();
+            animate();
+        };
+    </script>
+</body>
+</html>
